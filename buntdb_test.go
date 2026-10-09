@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -2958,3 +2959,93 @@ func TestIssue112(t *testing.T) {
 		return err
 	})
 }
+
+func TestIssue121(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "buntdb-issue121")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 1. Invalid path in nonexistent directory
+	nonExistentPath := filepath.Join(tempDir, "nonexistent_subfolder", "data.db")
+	db, err := Open(nonExistentPath)
+	if err == nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		t.Fatalf("expected error opening %s, got nil", nonExistentPath)
+	}
+	if db != nil {
+		t.Fatalf("expected nil db on open failure, got %v", db)
+	}
+
+	// 2. Directory path fails
+	db, err = Open(tempDir)
+	if err == nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		t.Fatalf("expected error opening directory %s, got nil", tempDir)
+	}
+	if db != nil {
+		t.Fatalf("expected nil db on open directory, got %v", db)
+	}
+
+	// 3. In-memory path works as expected
+	memDB, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("unexpected error opening in-memory db: %v", err)
+	}
+	if err := memDB.Update(func(tx *Tx) error {
+		_, _, err := tx.Set("key1", "val1", nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memDB.View(func(tx *Tx) error {
+		val, err := tx.Get("key1")
+		if err != nil || val != "val1" {
+			t.Fatalf("expected 'val1', got '%s', err: %v", val, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. Normal persistent file path
+	filePath := filepath.Join(tempDir, "valid.db")
+	db, err = Open(filePath)
+	if err != nil {
+		t.Fatalf("unexpected error opening valid db: %v", err)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		_, _, err := tx.Set("persisted_key", "persisted_val", nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen persistent file and verify contents
+	db, err = Open(filePath)
+	if err != nil {
+		t.Fatalf("unexpected error reopening valid db: %v", err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *Tx) error {
+		val, err := tx.Get("persisted_key")
+		if err != nil || val != "persisted_val" {
+			t.Fatalf("expected 'persisted_val', got '%s', err: %v", val, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+

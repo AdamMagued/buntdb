@@ -142,7 +142,19 @@ type exctx struct {
 // Open opens a database at the provided path.
 // If the file does not exist then it will be created automatically.
 func Open(path string) (*DB, error) {
-	db := &DB{}
+	var f *os.File
+	if path != ":memory:" {
+		var err error
+		// hardcoding 0666 as the default mode.
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
+		if err != nil {
+			return nil, err
+		}
+	}
+	db := &DB{
+		file:    f,
+		persist: path != ":memory:",
+	}
 	// initialize trees and indexes
 	db.keys = btreeNew(lessCtx(nil))
 	db.exps = btreeNew(lessCtx(&exctx{db}))
@@ -153,15 +165,7 @@ func Open(path string) (*DB, error) {
 		AutoShrinkPercentage: 100,
 		AutoShrinkMinSize:    32 * 1024 * 1024,
 	}
-	// turn off persistence for pure in-memory
-	db.persist = path != ":memory:"
 	if db.persist {
-		var err error
-		// hardcoding 0666 as the default mode.
-		db.file, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
-		if err != nil {
-			return nil, err
-		}
 		// load the database from disk
 		if err := db.load(); err != nil {
 			// close on error, ignore close error
