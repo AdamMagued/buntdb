@@ -905,6 +905,55 @@ func TestVariousTx(t *testing.T) {
 		if s != "nothing:here\n" {
 			t.Fatal("invalid scan")
 		}
+
+		s = ""
+		err = tx.DescendGreaterOrEqual("", "liger", func(key, val string) bool {
+			s += key + ":" + val + "\n"
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if s != "nothing:here\n" {
+			t.Fatal("invalid scan")
+		}
+
+		s = ""
+		err = tx.DescendGreaterOrEqual("", "nothing", func(key, val string) bool {
+			s += key + ":" + val + "\n"
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if s != "nothing:here\n" {
+			t.Fatal("invalid scan")
+		}
+
+		s = ""
+		err = tx.DescendGreaterThan("", "nothing", func(key, val string) bool {
+			s += key + ":" + val + "\n"
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if s != "" {
+			t.Fatal("invalid scan")
+		}
+
+		s = ""
+		err = tx.DescendGreaterOrEqual("", "hello", func(key, val string) bool {
+			s += key + ":" + val + "\n"
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if s != "nothing:here\nhello:planet\n" {
+			t.Fatal("invalid scan")
+		}
+
 		s = ""
 		err = tx.DescendRange("", "liger", "apple", func(key, val string) bool {
 			s += key + ":" + val + "\n"
@@ -2100,6 +2149,301 @@ usr:3 7
 	s2 := strings.TrimSpace(res)
 	if s1 != s2 {
 		t.Fatalf("expected [%v], got [%v]", s1, s2)
+	}
+}
+
+func TestIndexDescend(t *testing.T) {
+	rand.Seed(time.Now().UnixNano())
+	db := testOpen(t)
+	defer testClose(db)
+
+	if err := db.CreateIndex("usr", "usr:*", IndexInt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *Tx) error {
+		for i := 10; i > 0; i-- {
+			tx.Set(fmt.Sprintf("usr:%d", i), fmt.Sprintf("%d", 10-i), nil)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := &bytes.Buffer{}
+	err := db.View(func(tx *Tx) error {
+		tx.Descend("usr", func(key, value string) bool {
+			fmt.Fprintf(buf, "%s %s\n", key, value)
+			return true
+		})
+		fmt.Fprintln(buf)
+
+		tx.DescendGreaterThan("usr", "7", func(key, value string) bool {
+			fmt.Fprintf(buf, "%s %s\n", key, value)
+			return true
+		})
+		fmt.Fprintln(buf)
+
+		tx.DescendGreaterOrEqual("usr", "7", func(key, value string) bool {
+			fmt.Fprintf(buf, "%s %s\n", key, value)
+			return true
+		})
+		fmt.Fprintln(buf)
+
+		tx.DescendLessOrEqual("usr", "2", func(key, value string) bool {
+			fmt.Fprintf(buf, "%s %s\n", key, value)
+			return true
+		})
+		fmt.Fprintln(buf)
+
+		tx.DescendRange("usr", "6", "2", func(key, value string) bool {
+			fmt.Fprintf(buf, "%s %s\n", key, value)
+			return true
+		})
+		return nil
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := `
+usr:1 9
+usr:2 8
+usr:3 7
+usr:4 6
+usr:5 5
+usr:6 4
+usr:7 3
+usr:8 2
+usr:9 1
+usr:10 0
+
+usr:1 9
+usr:2 8
+
+usr:1 9
+usr:2 8
+usr:3 7
+
+usr:8 2
+usr:9 1
+usr:10 0
+
+usr:4 6
+usr:5 5
+usr:6 4
+usr:7 3
+`
+	res = strings.Replace(res, "\r", "", -1)
+	s1 := strings.TrimSpace(buf.String())
+	s2 := strings.TrimSpace(res)
+	if s1 != s2 {
+		t.Fatalf("expected [%v], got [%v]", s1, s2)
+	}
+}
+
+func TestDescendGreaterOrEqualBoundaryComparisons(t *testing.T) {
+	db := testOpen(t)
+	defer testClose(db)
+
+	if err := db.CreateIndex("num", "*", IndexInt); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []struct {
+		key, val string
+	}{
+		{"k:1", "10"},
+		{"k:2", "20"},
+		{"k:3", "20"},
+		{"k:4", "20"},
+		{"k:5", "30"},
+		{"k:6", "40"},
+	}
+
+	if err := db.Update(func(tx *Tx) error {
+		for _, it := range items {
+			if _, _, err := tx.Set(it.key, it.val, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test boundary with multiple duplicate index values matching pivot
+	if err := db.View(func(tx *Tx) error {
+		var descGTEKeys []string
+		err := tx.DescendGreaterOrEqual("num", "20", func(key, value string) bool {
+			descGTEKeys = append(descGTEKeys, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expectedGTE := []string{"k:6", "k:5", "k:4", "k:3", "k:2"}
+		if len(descGTEKeys) != len(expectedGTE) {
+			t.Fatalf("DescendGreaterOrEqual count mismatch: got %d, expected %d", len(descGTEKeys), len(expectedGTE))
+		}
+		for i, k := range expectedGTE {
+			if descGTEKeys[i] != k {
+				t.Fatalf("DescendGreaterOrEqual[%d] mismatch: got %s, expected %s", i, descGTEKeys[i], k)
+			}
+		}
+
+		// Verify DescendGreaterThan strictly excludes pivot
+		var descGTKeys []string
+		err = tx.DescendGreaterThan("num", "20", func(key, value string) bool {
+			descGTKeys = append(descGTKeys, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expectedGT := []string{"k:6", "k:5"}
+		if len(descGTKeys) != len(expectedGT) {
+			t.Fatalf("DescendGreaterThan count mismatch: got %d, expected %d", len(descGTKeys), len(expectedGT))
+		}
+		for i, k := range expectedGT {
+			if descGTKeys[i] != k {
+				t.Fatalf("DescendGreaterThan[%d] mismatch: got %s, expected %s", i, descGTKeys[i], k)
+			}
+		}
+
+		// Verify AscendGreaterOrEqual contains the same set of items in reverse
+		var ascGTEKeys []string
+		err = tx.AscendGreaterOrEqual("num", "20", func(key, value string) bool {
+			ascGTEKeys = append(ascGTEKeys, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expectedAscGTE := []string{"k:2", "k:3", "k:4", "k:5", "k:6"}
+		if len(ascGTEKeys) != len(expectedAscGTE) {
+			t.Fatalf("AscendGreaterOrEqual count mismatch: got %d, expected %d", len(ascGTEKeys), len(expectedAscGTE))
+		}
+		for i, k := range expectedAscGTE {
+			if ascGTEKeys[i] != k {
+				t.Fatalf("AscendGreaterOrEqual[%d] mismatch: got %s, expected %s", i, ascGTEKeys[i], k)
+			}
+		}
+
+		// Boundary between items (pivot 25)
+		var descGTE25 []string
+		err = tx.DescendGreaterOrEqual("num", "25", func(key, value string) bool {
+			descGTE25 = append(descGTE25, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expected25 := []string{"k:6", "k:5"}
+		if len(descGTE25) != len(expected25) {
+			t.Fatalf("DescendGreaterOrEqual 25 count mismatch: got %d, expected %d", len(descGTE25), len(expected25))
+		}
+		for i, k := range expected25 {
+			if descGTE25[i] != k {
+				t.Fatalf("DescendGreaterOrEqual 25[%d] mismatch: got %s, expected %s", i, descGTE25[i], k)
+			}
+		}
+
+		// Boundary above all elements (pivot 50)
+		var descGTE50 []string
+		err = tx.DescendGreaterOrEqual("num", "50", func(key, value string) bool {
+			descGTE50 = append(descGTE50, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if len(descGTE50) != 0 {
+			t.Fatalf("DescendGreaterOrEqual 50 expected 0 items, got %d", len(descGTE50))
+		}
+
+		// Boundary below all elements (pivot 5)
+		var descGTE5 []string
+		err = tx.DescendGreaterOrEqual("num", "5", func(key, value string) bool {
+			descGTE5 = append(descGTE5, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		if len(descGTE5) != len(items) {
+			t.Fatalf("DescendGreaterOrEqual 5 expected %d items, got %d", len(items), len(descGTE5))
+		}
+
+		// Early termination: stop after 2 items
+		var earlyStopKeys []string
+		err = tx.DescendGreaterOrEqual("num", "20", func(key, value string) bool {
+			earlyStopKeys = append(earlyStopKeys, key)
+			return len(earlyStopKeys) < 2
+		})
+		if err != nil {
+			return err
+		}
+		if len(earlyStopKeys) != 2 || earlyStopKeys[0] != "k:6" || earlyStopKeys[1] != "k:5" {
+			t.Fatalf("early termination failed, got %v", earlyStopKeys)
+		}
+
+		// Key-based iteration (empty index)
+		var keyGTE []string
+		err = tx.DescendGreaterOrEqual("", "k:3", func(key, value string) bool {
+			keyGTE = append(keyGTE, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expectedKeyGTE := []string{"k:6", "k:5", "k:4", "k:3"}
+		if len(keyGTE) != len(expectedKeyGTE) {
+			t.Fatalf("key DescendGreaterOrEqual count mismatch: got %d, expected %d", len(keyGTE), len(expectedKeyGTE))
+		}
+		for i, k := range expectedKeyGTE {
+			if keyGTE[i] != k {
+				t.Fatalf("key DescendGreaterOrEqual[%d] mismatch: got %s, expected %s", i, keyGTE[i], k)
+			}
+		}
+
+		// Key-based AscendGreaterOrEqual comparison
+		var keyAscGTE []string
+		err = tx.AscendGreaterOrEqual("", "k:3", func(key, value string) bool {
+			keyAscGTE = append(keyAscGTE, key)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		expectedKeyAscGTE := []string{"k:3", "k:4", "k:5", "k:6"}
+		if len(keyAscGTE) != len(expectedKeyAscGTE) {
+			t.Fatalf("key AscendGreaterOrEqual count mismatch: got %d, expected %d", len(keyAscGTE), len(expectedKeyAscGTE))
+		}
+		for i, k := range expectedKeyAscGTE {
+			if keyAscGTE[i] != k {
+				t.Fatalf("key AscendGreaterOrEqual[%d] mismatch: got %s, expected %s", i, keyAscGTE[i], k)
+			}
+		}
+
+		// Non-existent index error check
+		if err := tx.DescendGreaterOrEqual("unknown_index", "10", func(k, v string) bool { return true }); err != ErrNotFound {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Closed transaction check
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Rollback()
+	if err := tx.DescendGreaterOrEqual("", "k:1", func(k, v string) bool { return true }); err != ErrTxClosed {
+		t.Fatalf("expected ErrTxClosed, got %v", err)
 	}
 }
 

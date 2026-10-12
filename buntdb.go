@@ -1641,12 +1641,13 @@ func (tx *Tx) TTL(key string) (time.Duration, error) {
 // The desc param indicates that the iterator should descend.
 // The gt param indicates that there is a greaterThan limit.
 // The lt param indicates that there is a lessThan limit.
+// The eq param indicates that the limit is inclusive.
 // The index param tells the scanner to use the specified index tree. An
 // empty string for the index means to scan the keys, not the values.
 // The start and stop params are the greaterThan, lessThan limits. For
 // descending order, these will be lessThan, greaterThan.
 // An error will be returned if the tx is closed or the index is not found.
-func (tx *Tx) scan(desc, gt, lt bool, index, start, stop string,
+func (tx *Tx) scan(desc, gt, lt, eq bool, index, start, stop string,
 	iterator func(key, value string) bool) error {
 	if tx.db == nil {
 		return ErrTxClosed
@@ -1684,7 +1685,9 @@ func (tx *Tx) scan(desc, gt, lt bool, index, start, stop string,
 			itemA = &dbItem{val: start}
 			itemB = &dbItem{val: stop}
 			if desc {
-				itemA.keyless = true
+				if !(gt && !lt && eq) {
+					itemA.keyless = true
+				}
 				itemB.keyless = true
 			}
 		}
@@ -1700,6 +1703,8 @@ func (tx *Tx) scan(desc, gt, lt bool, index, start, stop string,
 		if gt {
 			if lt {
 				btreeDescendRange(tr, itemA, itemB, iter)
+			} else if eq {
+				btreeDescendGreaterOrEqual(tr, itemA, iter)
 			} else {
 				btreeDescendGreaterThan(tr, itemA, iter)
 			}
@@ -1805,7 +1810,7 @@ func (tx *Tx) DescendKeys(pattern string,
 // An invalid index will return an error.
 func (tx *Tx) Ascend(index string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(false, false, false, index, "", "", iterator)
+	return tx.scan(false, false, false, false, index, "", "", iterator)
 }
 
 // AscendGreaterOrEqual calls the iterator for every item in the database within
@@ -1816,7 +1821,7 @@ func (tx *Tx) Ascend(index string,
 // An invalid index will return an error.
 func (tx *Tx) AscendGreaterOrEqual(index, pivot string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(false, true, false, index, pivot, "", iterator)
+	return tx.scan(false, true, false, false, index, pivot, "", iterator)
 }
 
 // AscendLessThan calls the iterator for every item in the database within the
@@ -1827,7 +1832,7 @@ func (tx *Tx) AscendGreaterOrEqual(index, pivot string,
 // An invalid index will return an error.
 func (tx *Tx) AscendLessThan(index, pivot string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(false, false, true, index, pivot, "", iterator)
+	return tx.scan(false, false, true, false, index, pivot, "", iterator)
 }
 
 // AscendRange calls the iterator for every item in the database within
@@ -1839,7 +1844,7 @@ func (tx *Tx) AscendLessThan(index, pivot string,
 func (tx *Tx) AscendRange(index, greaterOrEqual, lessThan string,
 	iterator func(key, value string) bool) error {
 	return tx.scan(
-		false, true, true, index, greaterOrEqual, lessThan, iterator,
+		false, true, true, false, index, greaterOrEqual, lessThan, iterator,
 	)
 }
 
@@ -1851,7 +1856,7 @@ func (tx *Tx) AscendRange(index, greaterOrEqual, lessThan string,
 // An invalid index will return an error.
 func (tx *Tx) Descend(index string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(true, false, false, index, "", "", iterator)
+	return tx.scan(true, false, false, false, index, "", "", iterator)
 }
 
 // DescendGreaterThan calls the iterator for every item in the database within
@@ -1862,7 +1867,18 @@ func (tx *Tx) Descend(index string,
 // An invalid index will return an error.
 func (tx *Tx) DescendGreaterThan(index, pivot string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(true, true, false, index, pivot, "", iterator)
+	return tx.scan(true, true, false, false, index, pivot, "", iterator)
+}
+
+// DescendGreaterOrEqual calls the iterator for every item in the database within
+// the range [last, pivot], until iterator returns false.
+// When an index is provided, the results will be ordered by the item values
+// as specified by the less() function of the defined index.
+// When an index is not provided, the results will be ordered by the item key.
+// An invalid index will return an error.
+func (tx *Tx) DescendGreaterOrEqual(index, pivot string,
+	iterator func(key, value string) bool) error {
+	return tx.scan(true, true, false, true, index, pivot, "", iterator)
 }
 
 // DescendLessOrEqual calls the iterator for every item in the database within
@@ -1873,7 +1889,7 @@ func (tx *Tx) DescendGreaterThan(index, pivot string,
 // An invalid index will return an error.
 func (tx *Tx) DescendLessOrEqual(index, pivot string,
 	iterator func(key, value string) bool) error {
-	return tx.scan(true, false, true, index, pivot, "", iterator)
+	return tx.scan(true, false, true, false, index, pivot, "", iterator)
 }
 
 // DescendRange calls the iterator for every item in the database within
@@ -1885,7 +1901,7 @@ func (tx *Tx) DescendLessOrEqual(index, pivot string,
 func (tx *Tx) DescendRange(index, lessOrEqual, greaterThan string,
 	iterator func(key, value string) bool) error {
 	return tx.scan(
-		true, true, true, index, lessOrEqual, greaterThan, iterator,
+		true, true, true, false, index, lessOrEqual, greaterThan, iterator,
 	)
 }
 
@@ -2346,7 +2362,7 @@ func bLT(tr *btree.BTree, a, b interface{}) bool { return tr.Less(a, b) }
 func bGT(tr *btree.BTree, a, b interface{}) bool { return tr.Less(b, a) }
 
 // func bLTE(tr *btree.BTree, a, b interface{}) bool { return !tr.Less(b, a) }
-// func bGTE(tr *btree.BTree, a, b interface{}) bool { return !tr.Less(a, b) }
+func bGTE(tr *btree.BTree, a, b interface{}) bool { return !tr.Less(a, b) }
 
 // Ascend
 
@@ -2387,6 +2403,14 @@ func btreeDescendGreaterThan(tr *btree.BTree, pivot interface{},
 ) {
 	tr.Descend(nil, func(item interface{}) bool {
 		return bGT(tr, item, pivot) && iter(item)
+	})
+}
+
+func btreeDescendGreaterOrEqual(tr *btree.BTree, pivot interface{},
+	iter func(item interface{}) bool,
+) {
+	tr.Descend(nil, func(item interface{}) bool {
+		return bGTE(tr, item, pivot) && iter(item)
 	})
 }
 
