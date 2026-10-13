@@ -2958,3 +2958,258 @@ func TestIssue112(t *testing.T) {
 		return err
 	})
 }
+
+func TestIndexBitCompare(t *testing.T) {
+	// Booleans
+	if !IndexBool("false", "true") {
+		t.Fatal("expected false < true")
+	}
+	if IndexBool("true", "false") {
+		t.Fatal("expected !(true < false)")
+	}
+	if IndexBool("true", "true") {
+		t.Fatal("expected !(true < true)")
+	}
+	if IndexBool("false", "false") {
+		t.Fatal("expected !(false < false)")
+	}
+	if !IndexBool("0", "1") {
+		t.Fatal("expected 0 < 1")
+	}
+
+	// Bits
+	if !IndexBit("0", "1") {
+		t.Fatal("expected 0 < 1")
+	}
+	if !IndexBit("false", "true") {
+		t.Fatal("expected false < true")
+	}
+	if !IndexBit("0", "true") {
+		t.Fatal("expected 0 < true")
+	}
+	if !IndexBit("false", "1") {
+		t.Fatal("expected false < 1")
+	}
+	if IndexBit("1", "0") {
+		t.Fatal("expected !(1 < 0)")
+	}
+	if IndexBit("true", "false") {
+		t.Fatal("expected !(true < false)")
+	}
+	if !IndexBit("0b01", "0b10") {
+		t.Fatal("expected 0b01 < 0b10")
+	}
+	if !IndexBit("0x0F", "0x10") {
+		t.Fatal("expected 0x0F < 0x10")
+	}
+	if !IndexBit("2", "10") {
+		t.Fatal("expected 2 < 10")
+	}
+	// Fallback to string if non-numeric/non-boolean
+	if !IndexBit("apple", "banana") {
+		t.Fatal("expected apple < banana")
+	}
+}
+
+func TestJSONBitIndex(t *testing.T) {
+	db := testOpen(t)
+	defer testClose(db)
+
+	if err := db.CreateIndex("active", "*", IndexJSONBit("active")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("active_desc", "*", Desc(IndexJSONBit("active"))); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = db.Update(func(tx *Tx) error {
+		_, _, _ = tx.Set("1", `{"id":1,"active":true}`, nil)
+		_, _, _ = tx.Set("2", `{"id":2,"active":false}`, nil)
+		_, _, _ = tx.Set("3", `{"id":3,"active":0}`, nil)
+		_, _, _ = tx.Set("4", `{"id":4,"active":1}`, nil)
+		_, _, _ = tx.Set("5", `{"id":5,"active":"false"}`, nil)
+		_, _, _ = tx.Set("6", `{"id":6,"active":"true"}`, nil)
+		_, _, _ = tx.Set("7", `{"id":7,"active":2}`, nil)
+		_, _, _ = tx.Set("8", `{"id":8}`, nil)
+		return nil
+	})
+
+	var keysAsc []string
+	_ = db.View(func(tx *Tx) error {
+		return tx.Ascend("active", func(key, value string) bool {
+			keysAsc = append(keysAsc, key)
+			return true
+		})
+	})
+
+	expectedAsc := []string{"8", "2", "3", "5", "1", "4", "6", "7"}
+	if strings.Join(keysAsc, ",") != strings.Join(expectedAsc, ",") {
+		t.Fatalf("expected ascend %v, got %v", expectedAsc, keysAsc)
+	}
+
+	var keysDesc []string
+	_ = db.View(func(tx *Tx) error {
+		return tx.Ascend("active_desc", func(key, value string) bool {
+			keysDesc = append(keysDesc, key)
+			return true
+		})
+	})
+	expectedDesc := []string{"7", "1", "4", "6", "2", "3", "5", "8"}
+	if strings.Join(keysDesc, ",") != strings.Join(expectedDesc, ",") {
+		t.Fatalf("expected descend %v, got %v", expectedDesc, keysDesc)
+	}
+
+	var equalKeys []string
+	_ = db.View(func(tx *Tx) error {
+		return tx.AscendEqual("active", `{"active":true}`, func(key, value string) bool {
+			equalKeys = append(equalKeys, key)
+			return true
+		})
+	})
+	expectedEqual := []string{"1", "4", "6"}
+	if strings.Join(equalKeys, ",") != strings.Join(expectedEqual, ",") {
+		t.Fatalf("expected equal %v, got %v", expectedEqual, equalKeys)
+	}
+}
+
+func TestJSONBitVariants(t *testing.T) {
+	db := testOpen(t)
+	defer testClose(db)
+
+	if err := db.CreateIndex("b_bool", "*", IndexJSONBitBool("flag")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_int", "*", IndexJSONBitInt("code")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_str", "*", IndexJSONBitString("state")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_wise", "*", IndexJSONBitwise("code")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_json_bool", "*", IndexJSONBool("flag")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_t_bool", "*", IndexJSONBitT[bool]("flag")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateIndex("b_t_int", "*", IndexJSONBitT[int]("code")); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = db.Update(func(tx *Tx) error {
+		_, _, _ = tx.Set("k1", `{"flag":false,"code":10,"state":"Delivered"}`, nil)
+		_, _, _ = tx.Set("k2", `{"flag":true,"code":2,"state":"Canceled"}`, nil)
+		_, _, _ = tx.Set("k3", `{"flag":false,"code":5,"state":"Processing"}`, nil)
+		_, _, _ = tx.Set("k4", `{"flag":true,"code":1,"state":"Confirmed"}`, nil)
+		return nil
+	})
+
+	_ = db.View(func(tx *Tx) error {
+		var boolKeys []string
+		_ = tx.Ascend("b_bool", func(key, value string) bool {
+			boolKeys = append(boolKeys, key)
+			return true
+		})
+		if strings.Join(boolKeys, ",") != "k1,k3,k2,k4" {
+			t.Fatalf("expected b_bool k1,k3,k2,k4, got %v", boolKeys)
+		}
+
+		var intKeys []string
+		_ = tx.Ascend("b_int", func(key, value string) bool {
+			intKeys = append(intKeys, key)
+			return true
+		})
+		if strings.Join(intKeys, ",") != "k4,k2,k3,k1" {
+			t.Fatalf("expected b_int k4,k2,k3,k1, got %v", intKeys)
+		}
+
+		var strKeys []string
+		_ = tx.Ascend("b_str", func(key, value string) bool {
+			strKeys = append(strKeys, key)
+			return true
+		})
+		if strings.Join(strKeys, ",") != "k2,k4,k1,k3" {
+			t.Fatalf("expected b_str k2,k4,k1,k3, got %v", strKeys)
+		}
+
+		var wiseKeys []string
+		_ = tx.Ascend("b_wise", func(key, value string) bool {
+			wiseKeys = append(wiseKeys, key)
+			return true
+		})
+		if strings.Join(wiseKeys, ",") != "k4,k2,k3,k1" {
+			t.Fatalf("expected b_wise k4,k2,k3,k1, got %v", wiseKeys)
+		}
+
+		var jsonBoolKeys []string
+		_ = tx.Ascend("b_json_bool", func(key, value string) bool {
+			jsonBoolKeys = append(jsonBoolKeys, key)
+			return true
+		})
+		if strings.Join(jsonBoolKeys, ",") != "k1,k3,k2,k4" {
+			t.Fatalf("expected b_json_bool k1,k3,k2,k4, got %v", jsonBoolKeys)
+		}
+
+		var tBoolKeys []string
+		_ = tx.Ascend("b_t_bool", func(key, value string) bool {
+			tBoolKeys = append(tBoolKeys, key)
+			return true
+		})
+		if strings.Join(tBoolKeys, ",") != "k1,k3,k2,k4" {
+			t.Fatalf("expected b_t_bool k1,k3,k2,k4, got %v", tBoolKeys)
+		}
+
+		var tIntKeys []string
+		_ = tx.Ascend("b_t_int", func(key, value string) bool {
+			tIntKeys = append(tIntKeys, key)
+			return true
+		})
+		if strings.Join(tIntKeys, ",") != "k4,k2,k3,k1" {
+			t.Fatalf("expected b_t_int k4,k2,k3,k1, got %v", tIntKeys)
+		}
+
+		return nil
+	})
+}
+
+func TestIssue123BitIndexLowCardinality(t *testing.T) {
+	db := testOpen(t)
+	defer testClose(db)
+
+	if err := db.CreateIndex("order_status", "*", IndexJSONBit("status_code")); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = db.Update(func(tx *Tx) error {
+		_, _, _ = tx.Set("ord1", `{"orderId":"ORD1","status_code":1}`, nil)
+		_, _, _ = tx.Set("ord2", `{"orderId":"ORD2","status_code":3}`, nil)
+		_, _, _ = tx.Set("ord3", `{"orderId":"ORD3","status_code":2}`, nil)
+		_, _, _ = tx.Set("ord4", `{"orderId":"ORD4","status_code":4}`, nil)
+		_, _, _ = tx.Set("ord5", `{"orderId":"ORD5","status_code":1}`, nil)
+		return nil
+	})
+
+	_ = db.View(func(tx *Tx) error {
+		var confirmed []string
+		_ = tx.AscendEqual("order_status", `{"status_code":1}`, func(key, value string) bool {
+			confirmed = append(confirmed, key)
+			return true
+		})
+		if strings.Join(confirmed, ",") != "ord1,ord5" {
+			t.Fatalf("expected ord1,ord5 for status_code 1, got %v", confirmed)
+		}
+
+		var allOrders []string
+		_ = tx.Ascend("order_status", func(key, value string) bool {
+			allOrders = append(allOrders, key)
+			return true
+		})
+		if strings.Join(allOrders, ",") != "ord1,ord5,ord3,ord2,ord4" {
+			t.Fatalf("expected ord1,ord5,ord3,ord2,ord4, got %v", allOrders)
+		}
+		return nil
+	})
+}
+

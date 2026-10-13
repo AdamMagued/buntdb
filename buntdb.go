@@ -2335,6 +2335,216 @@ func IndexJSONCaseSensitive(path string) func(a, b string) bool {
 	}
 }
 
+func parseBitString(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "false") || s == "f" || s == "F" {
+		return 0, true
+	}
+	if strings.EqualFold(s, "true") || s == "t" || s == "T" {
+		return 1, true
+	}
+	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
+		return i, true
+	}
+	if b, err := strconv.ParseBool(s); err == nil {
+		if b {
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
+}
+
+func parseBoolString(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "true") || s == "t" || s == "T" || s == "1" {
+		return true
+	}
+	if b, err := strconv.ParseBool(s); err == nil {
+		return b
+	}
+	if i, err := strconv.ParseInt(s, 0, 64); err == nil {
+		return i != 0
+	}
+	return false
+}
+
+func toBitValue(r gjson.Result) (int64, bool) {
+	if !r.Exists() {
+		return 0, false
+	}
+	switch r.Type {
+	case gjson.False:
+		return 0, true
+	case gjson.True:
+		return 1, true
+	case gjson.Number:
+		return r.Int(), true
+	case gjson.String:
+		return parseBitString(r.Str)
+	}
+	return 0, false
+}
+
+func toBoolValue(r gjson.Result) bool {
+	if !r.Exists() {
+		return false
+	}
+	switch r.Type {
+	case gjson.True:
+		return true
+	case gjson.False:
+		return false
+	case gjson.Number:
+		return r.Int() != 0
+	case gjson.String:
+		return parseBoolString(r.Str)
+	}
+	return false
+}
+
+func toIntValue(r gjson.Result) int64 {
+	if !r.Exists() {
+		return 0
+	}
+	switch r.Type {
+	case gjson.Number:
+		return r.Int()
+	case gjson.True:
+		return 1
+	case gjson.False:
+		return 0
+	case gjson.String:
+		if i, ok := parseBitString(r.Str); ok {
+			return i
+		}
+	}
+	return 0
+}
+
+// IndexBit is a helper function that returns true if 'a' is less than 'b'.
+// This compares values as bits or integers (0 or 1, false or true, etc.).
+func IndexBit(a, b string) bool {
+	ba, oka := parseBitString(a)
+	bb, okb := parseBitString(b)
+	if oka && okb {
+		return ba < bb
+	}
+	if oka {
+		return true
+	}
+	if okb {
+		return false
+	}
+	return IndexString(a, b)
+}
+
+// IndexBool is a helper function that returns true if 'a' is less than 'b'.
+// This compares boolean values where false is less than true.
+func IndexBool(a, b string) bool {
+	ba := parseBoolString(a)
+	bb := parseBoolString(b)
+	if ba != bb {
+		return !ba && bb
+	}
+	return false
+}
+
+// IndexJSONBit provides for the ability to create a bit or bitwise index on
+// a JSON property. It supports boolean values (false/true, 0/1), integer bit values,
+// and string representations. It returns a helper function used by CreateIndex.
+func IndexJSONBit(path string) func(a, b string) bool {
+	return func(a, b string) bool {
+		ra := gjson.Get(a, path)
+		rb := gjson.Get(b, path)
+		if !ra.Exists() || !rb.Exists() {
+			return ra.Less(rb, false)
+		}
+		ba, oka := toBitValue(ra)
+		bb, okb := toBitValue(rb)
+		if oka && okb {
+			return ba < bb
+		}
+		if oka {
+			return true
+		}
+		if okb {
+			return false
+		}
+		return ra.Less(rb, false)
+	}
+}
+
+// IndexJSONBitwise provides for the ability to create a bitwise index on
+// a JSON property. It returns a helper function used by CreateIndex.
+func IndexJSONBitwise(path string) func(a, b string) bool {
+	return IndexJSONBit(path)
+}
+
+// IndexJSONBitBool provides for the ability to create an index on a JSON
+// boolean property (where false is less than true).
+// It returns a helper function used by CreateIndex.
+func IndexJSONBitBool(path string) func(a, b string) bool {
+	return func(a, b string) bool {
+		ra := gjson.Get(a, path)
+		rb := gjson.Get(b, path)
+		if !ra.Exists() || !rb.Exists() {
+			return ra.Less(rb, false)
+		}
+		ba := toBoolValue(ra)
+		bb := toBoolValue(rb)
+		if ba != bb {
+			return !ba && bb
+		}
+		return false
+	}
+}
+
+// IndexJSONBool provides for the ability to create an index on a JSON
+// boolean property.
+// It returns a helper function used by CreateIndex.
+func IndexJSONBool(path string) func(a, b string) bool {
+	return IndexJSONBitBool(path)
+}
+
+// IndexJSONBitInt provides for the ability to create an index on a JSON
+// integer property using integer comparison.
+// It returns a helper function used by CreateIndex.
+func IndexJSONBitInt(path string) func(a, b string) bool {
+	return func(a, b string) bool {
+		ra := gjson.Get(a, path)
+		rb := gjson.Get(b, path)
+		if !ra.Exists() || !rb.Exists() {
+			return ra.Less(rb, false)
+		}
+		return toIntValue(ra) < toIntValue(rb)
+	}
+}
+
+// IndexJSONBitString provides for the ability to create an index on a JSON
+// string property using case-insensitive comparison.
+// It returns a helper function used by CreateIndex.
+func IndexJSONBitString(path string) func(a, b string) bool {
+	return func(a, b string) bool {
+		ra := gjson.Get(a, path)
+		rb := gjson.Get(b, path)
+		if !ra.Exists() || !rb.Exists() {
+			return ra.Less(rb, false)
+		}
+		return IndexString(ra.String(), rb.String())
+	}
+}
+
+// BitValue represents allowable types for bit index values.
+type BitValue interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~bool | ~string
+}
+
+// IndexJSONBitT provides generic typed bit index construction on a JSON property.
+func IndexJSONBitT[T BitValue](path string) func(a, b string) bool {
+	return IndexJSONBit(path)
+}
+
 // Desc is a helper function that changes the order of an index.
 func Desc(less func(a, b string) bool) func(a, b string) bool {
 	return func(a, b string) bool { return less(b, a) }
